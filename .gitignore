@@ -3,6 +3,19 @@
 /steamcmd/
 .env copy
 /custom_files/*
+# InvisiblePlugin ships as a committed deployment artifact (see
+# scripts/deploy-invisible-plugin.sh); everything else in custom_files/
+# stays user-local like upstream intends.
+!/custom_files/addons
+/custom_files/addons/*
+!/custom_files/addons/counterstrikesharp
+/custom_files/addons/counterstrikesharp/*
+!/custom_files/addons/counterstrikesharp/plugins
+/custom_files/addons/counterstrikesharp/plugins/*
+!/custom_files/addons/counterstrikesharp/plugins/InvisiblePlugin
+!/custom_files/addons/counterstrikesharp/gamedata
+/custom_files/addons/counterstrikesharp/gamedata/*
+!/custom_files/addons/counterstrikesharp/gamedata/InvisiblePlugin.gamedata.json
 cs2
 tmp
 console.log

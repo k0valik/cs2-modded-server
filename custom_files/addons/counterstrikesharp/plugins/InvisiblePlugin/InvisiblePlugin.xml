@@ -1,0 +1,450 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>InvisiblePlugin</name>
+    </assembly>
+    <members>
+        <member name="T:InvisiblePlugin.Commands.CommandDebugDump">
+            <summary>
+            On-demand full state dump. Writes the complete current picture of every
+            tracked structure to the debug log (Core channel) so a moment in time can
+            be reconstructed after the fact. Never throws — a failing dump must not
+            take the server down.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Commands.CommandInvisible.MakeInvisible(CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>Adds a player to the invisible roster without a visible toggle side channel.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Commands.CommandInvisible.MakeVisible(CounterStrikeSharp.API.Core.CCSPlayerController,CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>Removes a player from the invisible roster and restores their visuals.</summary>
+        </member>
+        <member name="T:InvisiblePlugin.Commands.CommandReferee">
+             <summary>
+             Referee vision: a flagged player (admin or caster) sees invisible players
+             as glow outlines through walls, reusing the wallhack glow system.
+            
+             Per-viewer render alpha does not exist (m_clrRender is one networked value
+             for all clients), so "seeing" an alpha-0 player is impossible directly —
+             the glow outline is the honest alternative and reads as spectator vision.
+            
+             Admins are deliberately NOT referees by default: the admin is expected to
+             play the game, and seeing invisible players would be an unfair advantage.
+             Flag yourself with css_ref when you want to observe.
+             </summary>
+        </member>
+        <member name="T:InvisiblePlugin.DyingEntities">
+             <summary>
+             Tracks entities we have removed and keeps them out of every viewer's
+             transmit set until the engine has fully processed the removal.
+            
+             Removal is deferred by the engine (the entity is marked for deletion and
+             freed at the end of the frame); a snapshot sent in the meantime that still
+             carries the entity — or a snapshot that stops carrying it while a client
+             is mid-update — is the classic "missing client entity" / CopyExistingEntity
+             crash window. Each tracked entry stores the entity's raw handle
+             (index + serial), so an entry whose index has been recycled by a NEW entity
+             is dropped and the new entity transmits normally
+             (jRandomSkills EntityManager.recentlyDestroyed pattern).
+             </summary>
+        </member>
+        <member name="F:InvisiblePlugin.DyingEntities.WindowSeconds">
+            <summary>
+            Engine removal processing takes a frame or two; the extra window covers
+            clients that were mid-snapshot when the entity vanished.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.DyingEntities.Mark(CounterStrikeSharp.API.Core.CEntityInstance)">
+            <summary>Call BEFORE removing the entity, while its handle is still readable.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.DyingEntities.SuppressFrom(CounterStrikeSharp.API.Core.CCheckTransmitInfo)">
+            <summary>
+            Removes every live dying-entity index from the viewer's transmit set.
+            Expired entries and entries whose index was recycled by a different
+            entity are pruned. Allocation-free while the set is empty.
+            </summary>
+        </member>
+        <member name="T:InvisiblePlugin.ForceFullUpdate">
+             <summary>
+             Forces a full update (delta tick reset) on all real clients so they
+             re-acquire every entity before transmit hiding starts removing them from
+             snapshots (jRandomSkills ForceFullUpdateToAll pattern).
+            
+             CounterStrikeSharp 1.0.376 does not expose the network game server, so this
+             vendors a minimal interop (modeled on jRandomSkills CServerSideClient):
+             the engine's NetworkServerService_001 Valve interface, its GetIGameServer
+             vtable slot, the server's client slot vector, and
+             CServerSideClient.m_nDeltaTick. Setting m_nDeltaTick to -1 makes the
+             client's next snapshot a full update.
+            
+             Offsets come from gamedata/InvisiblePlugin.gamedata.json (shipped alongside
+             the plugin; copy to the server's gamedata directory). A full update resets
+             the client's view angles, so each forced player's angle is restored ~3
+             ticks later via Teleport with null origin/velocity (angle-only).
+             Not config-gated (standing policy: correctness/robustness ports are always
+             on); any interop failure is logged and skipped — hiding continues to work
+             without it, just without the extra safety margin.
+             </summary>
+        </member>
+        <member name="M:InvisiblePlugin.ForceFullUpdate.RunPlayer(CounterStrikeSharp.API.Core.CCSPlayerController,System.String)">
+            <summary>
+            Forces a full update for one client (CS2Fixes mitigation: a viewer
+            entering or leaving observer mode holds a client baseline built under a
+            different transmit pattern — forcing a full update on the transition
+            prevents the associated hide desyncs).
+            </summary>
+        </member>
+        <member name="P:InvisiblePlugin.Globals.Referees">
+            <summary>Referee state keys — referees see invisible players as glow outlines (css_ref toggle).</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleRevealSeconds">
+            <summary>Duration in seconds of the short event reveal windows (bullet impact, hurt, zoom, landing).</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleRevealOnHurt">
+            <summary>Whether taking damage opens a reveal window. Disable for spray-heavy modes: sustained fire would otherwise keep an invisible player permanently revealed.</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleHideFrom">
+            <summary>
+            Who an invisible player is hidden from. "All" = render-invisible and transmit-blocked
+            from everyone (original behavior). "Enemy" = transmit-only hiding from enemy players;
+            teammates see them fully (no render tricks), spectators always see through.
+            </summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleRevealDistance">
+            <summary>Reveal an invisible player when any viewer they are hidden from comes within this many units (0 = off).</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleRevealOnRun">
+            <summary>Whether running faster than InvisibleRevealRunSpeed opens a reveal window. Off by default (1v5-style modes want run-and-gun); enable for 5v5 to force sneaky gameplay.</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleRevealRunSpeed">
+            <summary>Horizontal speed (units/s) above which a running player reveals themselves (only while on the ground).</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.InvisibleTransmitHiding">
+            <summary>Operational fallback: when false, transmit hiding is disabled entirely — hiding happens only via render alpha ("All" mode) or not at all ("Enemy" mode). Use if transmit bookkeeping ever misbehaves on a live server.</summary>
+        </member>
+        <member name="P:InvisiblePlugin.InvisibleConfig.RefereePermission">
+            <summary>Admin permission for the referee toggle (css_ref). Referees see invisible players as glow outlines; admins playing the game stay blind unless they flag themselves.</summary>
+        </member>
+        <member name="T:InvisiblePlugin.DebugConfig">
+            <summary>
+            Debug logging configuration. Channels are granular subsystems; each level
+            name is Off/Error/Warning/Information/Debug/Trace (case-insensitive).
+            Default is Debug everywhere — logging only gets demoted once a subsystem
+            has proven itself stable in production.
+            </summary>
+        </member>
+        <member name="T:InvisiblePlugin.Logging.DebugLevel">
+            <summary>
+            Verbosity levels for debug channels. Ordered from least to most verbose;
+            a channel at level X emits everything at or below X.
+            </summary>
+        </member>
+        <member name="T:InvisiblePlugin.Logging.DebugChannels">
+            <summary>
+            Logical debug channels. Each maps to a logger category named
+            "InvisiblePlugin.{channel}", so log lines are filterable by subsystem
+            in both the console and the rotating log files.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Core">
+            <summary>Plugin lifecycle, config parsing, dump command.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Invisible">
+            <summary>Invisibility state changes and reveal windows.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Wallhack">
+            <summary>Glow entity creation/removal and wallhack toggles.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Transmit">
+            <summary>Per-viewer transmit decisions (change-driven; logs flips, not steady state).</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Lifecycle">
+            <summary>Spawn/death/disconnect handling and state cleanup.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Logging.DebugChannels.Admin">
+            <summary>Admin command state changes.</summary>
+        </member>
+        <member name="T:InvisiblePlugin.Logging.DebugLog">
+             <summary>
+             Debug logging facade.
+            
+             Policy (AGENTS.md): configurable, granular, default ON. Every boundary
+             interacting with game state should log its decision so any misbehavior is
+             reconstructible from logs after the fact. Logging only goes quiet when a
+             subsystem has proven itself stable in production (level demoted in config).
+            
+             Hot-path rules:
+              - Log on CHANGE, not on steady state (e.g. a transmit decision flips,
+                not every tick it stays the same).
+              - Before building an expensive log payload in a hot path, check
+                <see cref="M:InvisiblePlugin.Logging.DebugLog.Enabled(System.String,InvisiblePlugin.Logging.DebugLevel)"/> first; when the channel is gated off the check is
+                the only cost.
+            
+             Underlying engine is the host's Microsoft.Extensions.Logging + Serilog
+             pipeline (console + daily rotating file, lines tagged with our plugin
+             source context). We add no logging dependencies of our own.
+             </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Logging.DebugLog.Configure(System.Boolean,System.Collections.Generic.IEnumerable{System.Collections.Generic.KeyValuePair{System.String,System.String}})">
+            <summary>Applies a parsed configuration. Called when the plugin config is parsed.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Logging.DebugLog.ParseLevel(System.String)">
+            <summary>
+            Parses a level name (case-insensitive). Unknown or empty values fall
+            back to <see cref="F:InvisiblePlugin.Logging.DebugLevel.Debug"/> — fail-open, log more rather
+            than less.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Logging.DebugLog.Enabled(System.String,InvisiblePlugin.Logging.DebugLevel)">
+            <summary>
+            True when the channel currently emits at the given level. Hot-path
+            guard: call this before building expensive log payloads.
+            </summary>
+        </member>
+        <member name="T:InvisiblePlugin.Models.RevealClock">
+             <summary>
+             The reveal fade clock — pure decision logic, no engine types, unit-tested.
+            
+             A reveal window is [StartTime, EndTime]: fully visible (alpha 255) until
+             the halfway point, then a linear fade to 0 at EndTime, and 0 afterwards.
+             One clock drives both the render alpha and (via "alpha reached 0") the
+             transmit state.
+             </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Models.RevealClock.GetAlpha(System.Single,System.Single,System.Single)">
+            <summary>Alpha (0–255) at time <paramref name="now"/> for the window [<paramref name="startTime"/>, <paramref name="endTime"/>].</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Models.RevealClock.MapClamped(System.Single,System.Single,System.Single,System.Single,System.Single)">
+            <summary>Linear map with clamping; degenerate ranges collapse to the target minimum.</summary>
+        </member>
+        <member name="P:InvisiblePlugin.Models.SoundData.WasFullyHidden">
+            <summary>
+            True while the fade clock has this player at alpha 0 (fully hidden).
+            Used for change-driven debug logging of the hidden/shown transition.
+            </summary>
+        </member>
+        <member name="P:InvisiblePlugin.Models.SoundData.LastFallVelocity">
+            <summary>
+            Vertical velocity captured on the last airborne tick — the fall-impact
+            speed used by the landing reveal trigger.
+            </summary>
+        </member>
+        <member name="P:InvisiblePlugin.Models.SoundData.WasAirborne">
+            <summary>True on the previous tick if the pawn was airborne (landing trigger edge).</summary>
+        </member>
+        <member name="T:InvisiblePlugin.Modules.CarriedBomb">
+            <summary>
+            Closes the carried-C4 illusion leaks:
+            - an invisible bomb carrier must not announce themselves through the
+              carried bomb's radar spotted state (radar blips come from spotted state,
+              not transmit — jRandomSkills C4Camouflage.ClearSpottedState);
+            - C4 particle/effect entities spawned around the carrier must not render
+              for other players, or the blinking LED trail gives the carrier away
+              (InvisiblePlayerPlugin OnEntitySpawned behavior, reimplemented).
+            The bomb weapon entity itself needs no separate transmit handling — it is
+            in the carrier's MyWeapons and is hidden by the regular weapon sweep.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.CarriedBomb.WipeSpotted(CounterStrikeSharp.API.Core.CCSPlayerPawn,CounterStrikeSharp.API.Core.CC4)">
+            <summary>
+            Clears the radar spotted state on the pawn AND the carried bomb —
+            including both SpottedByMask halves, which older code missed.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.CarriedBomb.OnEntitySpawned(CounterStrikeSharp.API.Core.CEntityInstance)">
+            <summary>
+            Entity-spawn listener: when a C4-related particle/effect spawns while an
+            invisible player carries the bomb, remove it before it ever transmits.
+            Event-driven, not per-tick.
+            </summary>
+        </member>
+        <member name="T:InvisiblePlugin.Modules.DefuseKit">
+            <summary>
+            Hides the defuse kit while an invisible player is defusing: the kit is a
+            prop_dynamic placed next to the defusing player, and without handling it
+            floats in mid-air for everyone else (InvisiblePlayerPlugin OnBombBeginDefuse
+            behavior, ported). The kit entity is put into the regular transmit-hide
+            state with the defuser as owner, so all existing exemptions (owner,
+            spectators, death un-hide, snapshot validation) apply to it automatically.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.DefuseKit.KitsInUse">
+            <summary>Kit entity currently attached per invisible defuser (state key).</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.DefuseKit.ClearFor(CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>Stops hiding the defuser's kit (abort, success, death, disconnect).</summary>
+        </member>
+        <member name="T:InvisiblePlugin.Modules.Invisible.HiddenOwner">
+            <summary>Owner, the raw handle captured when the entity was hidden (detects index recycling), the owner's team, and whether the owner is currently inside a reveal window.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.HiddenOwner.#ctor(CounterStrikeSharp.API.Core.CCSPlayerController,System.UInt32,CounterStrikeSharp.API.Modules.Utils.CsTeam,System.Boolean)">
+            <summary>Owner, the raw handle captured when the entity was hidden (detects index recycling), the owner's team, and whether the owner is currently inside a reveal window.</summary>
+        </member>
+        <member name="T:InvisiblePlugin.Modules.Invisible.HiddenEntry">
+            <summary>
+            Per-tick snapshot of the transmit-block set, built once per tick from
+            HiddenEntities (with raw-handle validation) and only READ by the transmit
+            listener — no per-viewer allocation, no mutation during CheckTransmit.
+            Index+handle pairs, so a recycled entity index is detectable at build time.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.HiddenEntry.#ctor(System.Int32,System.UInt32,System.Int32,CounterStrikeSharp.API.Modules.Utils.CsTeam,System.Boolean)">
+            <summary>
+            Per-tick snapshot of the transmit-block set, built once per tick from
+            HiddenEntities (with raw-handle validation) and only READ by the transmit
+            listener — no per-viewer allocation, no mutation during CheckTransmit.
+            Index+handle pairs, so a recycled entity index is detectable at build time.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.StaleHidden">
+            <summary>Reusable buffer for pruning stale HiddenEntities entries during the tick build.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.AttachmentState">
+            <summary>Last known foreign-attachment state per state key, for change-driven logging.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.ProximityState">
+            <summary>Last known proximity state per state key, for change-driven logging.</summary>
+        </member>
+        <member name="P:InvisiblePlugin.Modules.Invisible.IsEnemyOnly">
+            <summary>
+            True when the viewer's camera is currently driven by an observed entity
+            (dead/spectating). Hiding anything from such a viewer breaks the camera.
+            </summary>
+            <summary>True when hiding is enemy-only transmit filtering (teammates see invisible players fully; no render tricks).</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.GetObserverTargetIndex(CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>
+            Entity index of the pawn the viewer is actively spectating, or 0.
+            Index 0 is worldspawn and can never be a pawn, so it is a safe sentinel.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.BuildTransmitSnapshot">
+            <summary>
+            Rebuilds TransmitSnapshot from HiddenEntities (end of every tick).
+            Entries whose entity died, whose owner is gone, or whose raw handle no
+            longer matches (index recycled by a new entity) are dropped from both
+            the snapshot and the source dict.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.HasForeignAttachment(CounterStrikeSharp.API.Core.CCSPlayerPawn)">
+            <summary>
+            Fail-open attachment check (CS2-HideTeammates pattern): anything parented
+            into the pawn's model hierarchy that we did not create ourselves (e.g.
+            third-party prop_dynamic cosmetics) would stay visible while the pawn is
+            transmit-blocked — a half-hidden visual. When such an attachment exists,
+            the pawn is NOT transmit-blocked this tick (render alpha still applies,
+            so the body stays invisible while the situation is logged) — never a
+            half-state. Our own glow pair is excluded.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.HideFromTransmit(CounterStrikeSharp.API.Core.CEntityInstance,CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>
+            Public API for sibling modules: adds an extra entity (e.g. the defuse
+            kit) to the transmit-hide state for an owner. Updates both the source
+            dict and the current-frame snapshot, so ordering vs. the tick build
+            does not matter.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.UnhideFromTransmit(CounterStrikeSharp.API.Core.CEntityInstance)">
+            <summary>Public API for sibling modules: removes an extra entity from the transmit-hide state.</summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.GroupSeenHandles">
+            <summary>Reusable handle-dedup buffer for one HideVisualGroup call.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.HideVisualGroup(CounterStrikeSharp.API.Core.CCSPlayerPawn,CounterStrikeSharp.API.Core.CCSPlayerController,System.Boolean)">
+            <summary>
+            Hides the player's complete visual group as one unit (CS2FOW group
+            composition): the pawn, active/last/current weapons, wearables (gloves,
+            arm skins) and a carried hostage prop. Leaving any member out leaks
+            floating gear — or, if the attachment fail-open catches it instead,
+            pointlessly makes the whole player visible.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.UnhideVisualGroup(CounterStrikeSharp.API.Core.CCSPlayerPawn)">
+            <summary>
+            Removes every group member of the pawn from the hidden-entity dict
+            (death un-hide path). Idempotent; unknown handles are simply absent.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.PawnStateCache">
+            <summary>Last observed pawn state per state key, for observer-transition detection.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.CheckObserverTransitions">
+            <summary>
+            Forces a full update when a player enters or leaves observer mode
+            (CS2Fixes mitigation): a client that transitions between playing and
+            spectating holds a baseline built under a different transmit pattern —
+            refreshing it prevents the associated hide desyncs.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.OnPlayerDeathPre(CounterStrikeSharp.API.Core.EventPlayerDeath,CounterStrikeSharp.API.Core.GameEventInfo)">
+            <summary>
+            Pre-hook on player_death: the victim's pawn and carried weapons leave the
+            transmit-block state and their render alpha is restored BEFORE the engine
+            processes the death, so this frame's snapshots transmit the pawn again and
+            every client re-acquires it. The engine then builds the ragdoll that
+            references the pawn — a viewer who never received the invisible pawn would
+            otherwise get a ragdoll pointing at a client entity it does not have
+            (the "missing client entity" crash class; jRandomSkills RevealOnDeath).
+            Membership in InvisiblePlayers intentionally persists: permanent mode
+            re-applies alpha on respawn, reveal mode resets its window on spawn.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.FillOriginCache">
+            <summary>
+            Fills the per-tick origin/team cache used by the proximity reveal check.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.CheckProximityReveal(CounterStrikeSharp.API.Core.CCSPlayerController,System.UInt64,InvisiblePlugin.Models.SoundData@,System.Single)">
+            <summary>
+            Proximity reveal: while any viewer the player is hidden from stands
+            within InvisibleRevealDistance, the reveal window stays open (renewed
+            every tick), so someone close enough to "hear" the invisible player
+            sees them; across the map they do not. Change-driven logging.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.RunState">
+            <summary>
+            Run reveal (config-gated): while on the ground and moving faster than
+            InvisibleRevealRunSpeed, the reveal window stays open — running-and-
+            gunning is not compatible with a fair 5v5; walking stays silent.
+            Airborne ticks are excluded (landing has its own trigger).
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Invisible.LandingImpactVelocity">
+            <summary>
+            Landing reveal trigger (InvisiblePlayerPlugin CheckFallLanding
+            behavior): a hard fall-impact — vertical impact speed beyond the
+            threshold — opens a reveal window. Polled in the reveal tick; edge
+            detected via the airborne flag so walking off a single stair step
+            never triggers.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.RestoreCarriedVisuals(CounterStrikeSharp.API.Core.CCSPlayerPawn)">
+            <summary>Restores render state on wearables and the carried hostage prop.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Invisible.ApplyCarriedVisuals(CounterStrikeSharp.API.Core.CCSPlayerPawn,System.Byte)">
+            <summary>
+            Applies render alpha to the carried non-weapon models: wearables
+            (gloves, arm skins) and a carried hostage prop. Without this, an
+            alpha-0 body would still show floating gloves/hostage in All mode.
+            </summary>
+        </member>
+        <member name="F:InvisiblePlugin.Modules.Wallhack.StaleGlows">
+            <summary>Reusable buffer: glow owners whose data went stale, collected during the read pass and removed after it.</summary>
+        </member>
+        <member name="M:InvisiblePlugin.Modules.Wallhack.IsGlowEntity(CounterStrikeSharp.API.Core.CEntityInstance)">
+            <summary>
+            True when the entity is one of our glow props (relay or glow) following
+            a pawn — used by the attachment check to exclude our own followers.
+            </summary>
+        </member>
+        <member name="M:InvisiblePlugin.Util.GetStateKey(CounterStrikeSharp.API.Core.CCSPlayerController)">
+            <summary>
+            Lifecycle-stable key for per-player state: SteamID64 for humans (state
+            survives reconnects and slot changes by construction), a synthetic key
+            outside the SteamID64 space (derived from the per-connection UserId) for
+            bots, whose SteamID is 0.
+            </summary>
+        </member>
+    </members>
+</doc>

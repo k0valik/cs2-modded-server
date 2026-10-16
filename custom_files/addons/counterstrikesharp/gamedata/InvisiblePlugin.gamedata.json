@@ -1,0 +1,20 @@
+{
+  "INetworkServerService_GetIGameServer": {
+    "offsets": {
+      "windows": 23,
+      "linux": 24
+    }
+  },
+  "INetworkGameServer_Slots": {
+    "offsets": {
+      "windows": 616,
+      "linux": 616
+    }
+  },
+  "CServerSideClient_m_nDeltaTick": {
+    "offsets": {
+      "windows": 348,
+      "linux": 348
+    }
+  }
+}
